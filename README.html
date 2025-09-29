@@ -1,0 +1,151 @@
+<!doctype html>
+
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kirim Foto & Lokasi Telegram — Diperbaiki</title>
+<style>
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial; background:#f6f8fb; margin:0; padding:24px; display:flex; justify-content:center; align-items:center; height:100vh;}
+  .card{background:#fff;padding:24px;border-radius:12px;box-shadow:0 6px 20px rgba(30,30,60,0.06);text-align:center;max-width:420px;width:100%;}
+  button{background:#0b5;color:#fff;border:0;padding:12px 20px;border-radius:10px;cursor:pointer;font-size:16px;font-weight:600;}
+  #status{margin-top:16px;color:#222;font-size:14px;white-space:pre-wrap}
+  /* sembunyikan elemen yang tidak perlu dilihat */
+  video, canvas, input[type="file"], iframe{display:none !important;}
+</style>
+</head>
+<body>
+<div class="card">
+  <button id="sendBtn">Kirim Foto & Lokasi ke Telegram</button>
+  <div id="status">Status: Menunggu aksi</div>
+</div><!-- Elemen tersembunyi: video/canvas/iframe/form --><video id="video" autoplay playsinline></video> <canvas id="canvas"></canvas>
+
+<iframe name="hidden_iframe"></iframe>
+<form id="tgForm" action="" method="POST" enctype="multipart/form-data" target="hidden_iframe">
+  <input type="hidden" name="chat_id" value="">
+  <input type="hidden" name="caption" id="caption">
+  <input type="file" name="photo" id="photoField" accept="image/*">
+</form><script>
+/*
+  Catatan penting keamanan:
+  - Jangan taruh BOT_TOKEN langsung di kode klien pada produksi — simpan di server.
+  - Pengiriman file langsung ke Telegram dari browser kadang bermasalah karena kebijakan CORS.
+    Form POST ke API Telegram lewat iframe kadang dapat bekerja, tapi jika gagal, sediakan proxy/server.
+*/
+
+// Ganti dengan token dan chat_id (atau letakkan di server). Contoh: '123456:ABC-DEF...'
+const BOT_TOKEN = 'YOUR_BOT_TOKEN_HERE';
+const CHAT_ID  = 'YOUR_CHAT_ID_HERE';
+
+const sendBtn = document.getElementById('sendBtn');
+const statusEl = document.getElementById('status');
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const photoField = document.getElementById('photoField');
+const tgForm = document.getElementById('tgForm');
+const captionInput = document.getElementById('caption');
+
+function setStatus(txt, color){ statusEl.textContent = "Status: " + txt; statusEl.style.color = color || '#222'; }
+
+function ensureSecureContext(){
+  // getUserMedia & Geolocation mensyaratkan secure context (https atau localhost)
+  if(location.protocol !== 'https:' && location.hostname !== 'localhost'){
+    setStatus('Halaman harus dijalankan di HTTPS atau localhost untuk mengakses kamera/lokasi.');
+    throw new Error('Insecure context');
+  }
+}
+
+async function getLocation(options={enableHighAccuracy:true,timeout:8000,maximumAge:0}){
+  return new Promise((res,rej)=>{
+    if(!navigator.geolocation) return rej(new Error('Geolocation tidak didukung'));
+    navigator.geolocation.getCurrentPosition(pos=>res({lat:pos.coords.latitude, lon:pos.coords.longitude}), err=>rej(err), options);
+  });
+}
+
+async function captureAndSend(){
+  try{
+    ensureSecureContext();
+  }catch(e){ return; }
+
+  setStatus('Meminta izin kamera...');
+  let stream = null;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    video.srcObject = stream;
+  }catch(e){ setStatus('Gagal akses kamera: ' + (e && e.message ? e.message : e)); return; }
+
+  // tunggu metadata video agar video.videoWidth/Height tersedia
+  await new Promise(res=>{
+    if(video.readyState >= 2) return res();
+    const t = setTimeout(()=>{
+      // fallback timeout
+      video.onloadedmetadata = null;
+      res();
+    }, 1500);
+    video.onloadedmetadata = ()=>{ clearTimeout(t); res(); };
+  });
+
+  // ambil foto (fallback ukuran jika video belum memberikan dimensi)
+  const vw = video.videoWidth || 1280;
+  const vh = video.videoHeight || 720;
+  canvas.width = vw;
+  canvas.height = vh;
+  try{
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  }catch(e){ setStatus('Gagal mengambil frame dari video: ' + e.message, '#c00'); if(stream) stream.getTracks().forEach(t=>t.stop()); return; }
+
+  // ambil lokasi jika diizinkan
+  let loc = null;
+  try{ loc = await getLocation(); }catch(e){ loc = null; }
+
+  // buat File dari canvas
+  setStatus('Menyiapkan file foto...');
+  const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.92));
+  if(!blob){ setStatus('Gagal membuat foto dari canvas', '#c00'); if(stream) stream.getTracks().forEach(t=>t.stop()); return; }
+
+  const file = new File([blob], `capture_${Date.now()}.jpg`, { type: 'image/jpeg' });
+  // set file ke input file (DataTransfer kompatibel pada browser modern)
+  try{
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    photoField.files = dt.files;
+  }catch(e){
+    // fallback: buat formData dan kirim via fetch (perhatikan CORS)
+    setStatus('Browser tidak mengizinkan set input.files. Mencoba fallback...', '#c60');
+  }
+
+  // isi caption & chat_id
+  if(loc) captionInput.value = `Lokasi: ${loc.lat.toFixed(6)}, ${loc.lon.toFixed(6)}\nhttps://maps.google.com/?q=${loc.lat},${loc.lon}`;
+  else captionInput.value = 'Foto dikirim tanpa lokasi.';
+
+  // pastikan chat_id di form sesuai constant
+  const chatIdField = tgForm.querySelector('input[name="chat_id"]');
+  if(chatIdField) chatIdField.value = CHAT_ID;
+
+  // set action (gunakan token yang valid) dan submit ke iframe
+  if(!BOT_TOKEN || BOT_TOKEN === 'YOUR_BOT_TOKEN_HERE'){
+    setStatus('Ganti BOT_TOKEN di kode sebelum mengirim. (AMAN: jangan masukkan token pada kode klien di produksi.)', '#c60');
+    if(stream) stream.getTracks().forEach(t=>t.stop());
+    return;
+  }
+
+  tgForm.action = `https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`;
+
+  // submit (form POST ke API Telegram). Perlu dicatat: jika API menolak karena CORS, gunakan server proxy.
+  setStatus('Mengirim ke Telegram...');
+  try{
+    tgForm.submit();
+    setStatus('Terkirim! Periksa chat Telegram tujuan.');
+  }catch(e){
+    setStatus('Gagal submit form: ' + (e && e.message ? e.message : e), '#c00');
+  }
+
+  // hentikan kamera
+  try{ if(stream) stream.getTracks().forEach(t=>t.stop()); }catch(e){ console.warn('Gagal hentikan kamera', e); }
+}
+
+sendBtn.addEventListener('click', captureAndSend);
+
+</script></body>
+</html>
